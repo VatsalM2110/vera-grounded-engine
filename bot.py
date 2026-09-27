@@ -17,7 +17,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 STARTED = time.time()
 DB_PATH = Path(os.getenv("VERA_DB_PATH", Path(__file__).with_name("vera.db")))
 VALID_SCOPES = {"category", "merchant", "customer", "trigger"}
@@ -182,6 +182,13 @@ def clamp(text: str, limit: int = 950) -> str:
     return text[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
+def is_numerically_grounded(text: str, grounding: Any) -> bool:
+    """Reject invented prices, dates, percentages, counts, and other numeric claims."""
+    output_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", text))
+    source_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", json.dumps(grounding, ensure_ascii=False)))
+    return output_numbers.issubset(source_numbers)
+
+
 def customer_message(kind: str, merchant: dict[str, Any], category: dict[str, Any],
                      trigger: dict[str, Any], customer: dict[str, Any]) -> tuple[str, str, str]:
     p = trigger.get("payload", {})
@@ -295,7 +302,7 @@ def compose(trigger: dict[str, Any], merchant: dict[str, Any], category: dict[st
         "specific, helpful, warm, and end with one clear low-friction question. Return only the message.",
         f"Write to the {audience}. Trigger kind: {kind}. Grounding JSON: {json.dumps(facts, ensure_ascii=False)}",
     )
-    if ai_message:
+    if ai_message and is_numerically_grounded(ai_message, facts):
         return ai_message, "binary", f"Groq generated a natural action grounded only in the supplied {kind} context"
     if trigger.get("scope") == "customer" and customer:
         return customer_message(kind, merchant, category, trigger, customer)
@@ -435,13 +442,16 @@ def reply(body: ReplyRequest) -> dict[str, Any]:
         ai_response = groq_generate(
             "You are Vera, a concise WhatsApp business assistant. Reply naturally in under 500 characters. "
             "Use ONLY the supplied context and conversation. Never invent facts, URLs, results, or completed "
-            "actions. Answer the user's actual message, stay on the original business goal, and end with at "
+            "actions, products, services, prices, discounts, gifts, or benefits. Answer the user's actual "
+            "message, stay on the original business goal, and end with at "
             "most one useful question. Return only the reply.",
             json.dumps({"trigger": trigger, "merchant": merchant, "customer": customer,
                         "conversation": history, "latest_message": text}, ensure_ascii=False),
             max_tokens=600,
         )
-        if ai_response:
+        reply_grounding = {"trigger": trigger, "merchant": merchant, "customer": customer,
+                           "conversation": history, "latest_message": text}
+        if ai_response and is_numerically_grounded(ai_response, reply_grounding):
             response = clamp(ai_response)
             rationale = "Groq generated a contextual follow-up grounded in the stored conversation and business data"
             conn.execute("UPDATE conversations SET last_body=?,status='open',updated_at=? WHERE conversation_id=?", (response, ts, body.conversation_id))

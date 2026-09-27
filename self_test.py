@@ -43,5 +43,7 @@ original_groq = bot.groq_generate
 bot.groq_generate = lambda system, user, max_tokens=240: "AI-generated grounded draft for Dr. Meera. Shall I prepare it?"
 message, _, rationale = bot.compose(trigger, merchant, category, None)
 assert message.startswith("AI-generated") and rationale.startswith("Groq generated")
+assert bot.is_numerically_grounded("Offer at ₹299", category)
+assert not bot.is_numerically_grounded("Offer at ₹349", category)
 bot.groq_generate = original_groq
 print("All Vera contract tests passed")
