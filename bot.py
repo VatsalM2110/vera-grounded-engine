@@ -22,6 +22,7 @@ STARTED = time.time()
 DB_PATH = Path(os.getenv("VERA_DB_PATH", Path(__file__).with_name("vera.db")))
 VALID_SCOPES = {"category", "merchant", "customer", "trigger"}
 LOCK = threading.RLock()
+LAST_GROQ_ERROR: Optional[str] = None
 
 
 def groq_enabled() -> bool:
@@ -30,6 +31,7 @@ def groq_enabled() -> bool:
 
 def groq_generate(system: str, user: str, max_tokens: int = 240) -> Optional[str]:
     """Generate one grounded response, returning None so callers can safely fall back."""
+    global LAST_GROQ_ERROR
     api_key = os.getenv("GROQ_API_KEY", "").strip()
     if not api_key:
         return None
@@ -49,8 +51,16 @@ def groq_generate(system: str, user: str, max_tokens: int = 240) -> Optional[str
         with urllib.request.urlopen(request, timeout=float(os.getenv("GROQ_TIMEOUT_SECONDS", "8"))) as response:
             result = json.loads(response.read().decode("utf-8"))
         text = result["choices"][0]["message"]["content"].strip()
+        LAST_GROQ_ERROR = None
         return clamp(text) if text else None
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, KeyError, IndexError, json.JSONDecodeError):
+    except urllib.error.HTTPError as exc:
+        LAST_GROQ_ERROR = f"http_{exc.code}"
+        return None
+    except (urllib.error.URLError, TimeoutError) as exc:
+        LAST_GROQ_ERROR = type(exc).__name__
+        return None
+    except (ValueError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        LAST_GROQ_ERROR = type(exc).__name__
         return None
 
 
@@ -310,6 +320,14 @@ def healthz() -> dict[str, Any]:
 def metadata() -> dict[str, Any]:
     model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile") if groq_enabled() else "deterministic-rules-v1"
     return {"team_name": os.getenv("TEAM_NAME", "Vera Grounded"), "team_members": [os.getenv("TEAM_MEMBER", "Candidate")], "model": model, "ai_enabled": groq_enabled(), "approach": "Groq-generated grounded messages with deterministic safety fallback, trigger ranking, suppression, and reply state", "contact_email": os.getenv("CONTACT_EMAIL", "candidate@example.com"), "version": APP_VERSION, "submitted_at": os.getenv("SUBMITTED_AT", "2026-09-27T00:00:00Z")}
+
+
+@app.get("/v1/ai-health")
+def ai_health() -> dict[str, Any]:
+    if not groq_enabled():
+        return {"configured": False, "available": False, "error": "missing_key"}
+    result = groq_generate("Reply with exactly OK.", "Connection test", max_tokens=5)
+    return {"configured": True, "available": bool(result), "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), "error": LAST_GROQ_ERROR}
 
 
 @app.post("/v1/context")
