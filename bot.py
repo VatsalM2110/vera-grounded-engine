@@ -36,7 +36,7 @@ def groq_generate(system: str, user: str, max_tokens: int = 240) -> Optional[str
     if not api_key:
         return None
     payload = {
-        "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
+        "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "temperature": 0.35,
         "max_completion_tokens": max_tokens,
@@ -327,7 +327,7 @@ def healthz() -> dict[str, Any]:
 
 @app.get("/v1/metadata")
 def metadata() -> dict[str, Any]:
-    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b") if groq_enabled() else "deterministic-rules-v1"
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile") if groq_enabled() else "deterministic-rules-v1"
     return {"team_name": os.getenv("TEAM_NAME", "Vera Grounded"), "team_members": [os.getenv("TEAM_MEMBER", "Candidate")], "model": model, "ai_enabled": groq_enabled(), "approach": "Groq-generated grounded messages with deterministic safety fallback, trigger ranking, suppression, and reply state", "contact_email": os.getenv("CONTACT_EMAIL", "candidate@example.com"), "version": APP_VERSION, "submitted_at": os.getenv("SUBMITTED_AT", "2026-09-27T00:00:00Z")}
 
 
@@ -335,8 +335,8 @@ def metadata() -> dict[str, Any]:
 def ai_health() -> dict[str, Any]:
     if not groq_enabled():
         return {"configured": False, "available": False, "error": "missing_key"}
-    result = groq_generate("Reply with exactly OK.", "Connection test", max_tokens=5)
-    return {"configured": True, "available": bool(result), "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"), "error": LAST_GROQ_ERROR}
+    result = groq_generate("Reply with exactly OK.", "Connection test", max_tokens=20)
+    return {"configured": True, "available": bool(result), "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), "error": LAST_GROQ_ERROR}
 
 
 @app.post("/v1/context")
