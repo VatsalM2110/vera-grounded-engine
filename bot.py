@@ -55,6 +55,11 @@ def groq_generate(system: str, user: str, max_tokens: int = 240) -> Optional[str
         return clamp(text) if text else None
     except urllib.error.HTTPError as exc:
         LAST_GROQ_ERROR = f"http_{exc.code}"
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            detail = "unavailable"
+        print(f"Groq request failed with HTTP {exc.code}: {detail}", flush=True)
         return None
     except (urllib.error.URLError, TimeoutError) as exc:
         LAST_GROQ_ERROR = type(exc).__name__
