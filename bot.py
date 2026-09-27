@@ -1,4 +1,4 @@
-"""Vera challenge bot: deterministic, grounded and stateful message composition."""
+"""Vera challenge bot: Groq-powered, grounded and stateful message composition."""
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +8,8 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -15,11 +17,41 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 STARTED = time.time()
 DB_PATH = Path(os.getenv("VERA_DB_PATH", Path(__file__).with_name("vera.db")))
 VALID_SCOPES = {"category", "merchant", "customer", "trigger"}
 LOCK = threading.RLock()
+
+
+def groq_enabled() -> bool:
+    return bool(os.getenv("GROQ_API_KEY", "").strip())
+
+
+def groq_generate(system: str, user: str, max_tokens: int = 240) -> Optional[str]:
+    """Generate one grounded response, returning None so callers can safely fall back."""
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        return None
+    payload = {
+        "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "temperature": 0.35,
+        "max_completion_tokens": max_tokens,
+    }
+    request = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=float(os.getenv("GROQ_TIMEOUT_SECONDS", "8"))) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        text = result["choices"][0]["message"]["content"].strip()
+        return clamp(text) if text else None
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, KeyError, IndexError, json.JSONDecodeError):
+        return None
 
 
 def _db() -> sqlite3.Connection:
@@ -235,6 +267,17 @@ def merchant_message(kind: str, merchant: dict[str, Any], category: dict[str, An
 def compose(trigger: dict[str, Any], merchant: dict[str, Any], category: dict[str, Any],
             customer: Optional[dict[str, Any]]) -> tuple[str, str, str]:
     kind = trigger.get("kind", "update")
+    audience = "customer on the merchant's behalf" if customer else "merchant as Vera"
+    facts = {"trigger": trigger, "merchant": merchant, "category": category, "customer": customer}
+    ai_message = groq_generate(
+        "You are Vera, a concise WhatsApp business assistant for Indian local merchants. "
+        "Write exactly one natural message under 700 characters. Use ONLY facts in the supplied JSON; "
+        "never invent prices, dates, performance, medical advice, URLs, or capabilities. Make the message "
+        "specific, helpful, warm, and end with one clear low-friction question. Return only the message.",
+        f"Write to the {audience}. Trigger kind: {kind}. Grounding JSON: {json.dumps(facts, ensure_ascii=False)}",
+    )
+    if ai_message:
+        return ai_message, "binary", f"Groq generated a natural action grounded only in the supplied {kind} context"
     if trigger.get("scope") == "customer" and customer:
         return customer_message(kind, merchant, category, trigger, customer)
     return merchant_message(kind, merchant, category, trigger)
@@ -265,7 +308,8 @@ def healthz() -> dict[str, Any]:
 
 @app.get("/v1/metadata")
 def metadata() -> dict[str, Any]:
-    return {"team_name": os.getenv("TEAM_NAME", "Vera Grounded"), "team_members": [os.getenv("TEAM_MEMBER", "Candidate")], "model": "deterministic-rules-v1", "approach": "grounded trigger ranking + category-aware deterministic composer + reply state machine", "contact_email": os.getenv("CONTACT_EMAIL", "candidate@example.com"), "version": APP_VERSION, "submitted_at": os.getenv("SUBMITTED_AT", "2026-09-27T00:00:00Z")}
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile") if groq_enabled() else "deterministic-rules-v1"
+    return {"team_name": os.getenv("TEAM_NAME", "Vera Grounded"), "team_members": [os.getenv("TEAM_MEMBER", "Candidate")], "model": model, "ai_enabled": groq_enabled(), "approach": "Groq-generated grounded messages with deterministic safety fallback, trigger ranking, suppression, and reply state", "contact_email": os.getenv("CONTACT_EMAIL", "candidate@example.com"), "version": APP_VERSION, "submitted_at": os.getenv("SUBMITTED_AT", "2026-09-27T00:00:00Z")}
 
 
 @app.post("/v1/context")
@@ -357,6 +401,25 @@ def reply(body: ReplyRequest) -> dict[str, Any]:
         merchant = get_context("merchant", conv["merchant_id"]) or {}
         customer = get_context("customer", conv["customer_id"])
         name = (customer or {}).get("identity", {}).get("name") or first_name(merchant)
+        history = [dict(row) for row in conn.execute(
+            "SELECT role,body FROM turns WHERE conversation_id=? ORDER BY id DESC LIMIT 6",
+            (body.conversation_id,),
+        ).fetchall()][::-1]
+        ai_response = groq_generate(
+            "You are Vera, a concise WhatsApp business assistant. Reply naturally in under 500 characters. "
+            "Use ONLY the supplied context and conversation. Never invent facts, URLs, results, or completed "
+            "actions. Answer the user's actual message, stay on the original business goal, and end with at "
+            "most one useful question. Return only the reply.",
+            json.dumps({"trigger": trigger, "merchant": merchant, "customer": customer,
+                        "conversation": history, "latest_message": text}, ensure_ascii=False),
+            max_tokens=180,
+        )
+        if ai_response:
+            response = clamp(ai_response)
+            rationale = "Groq generated a contextual follow-up grounded in the stored conversation and business data"
+            conn.execute("UPDATE conversations SET last_body=?,status='open',updated_at=? WHERE conversation_id=?", (response, ts, body.conversation_id))
+            conn.execute("INSERT INTO turns(conversation_id,role,body,created_at) VALUES(?,?,?,?)", (body.conversation_id, "vera", response, ts))
+            return {"action": "send", "body": response, "cta": "binary", "rationale": rationale}
         if any(x in lower for x in GO_PATTERNS):
             kind = conv["trigger_kind"].replace("_", " ")
             response = f"Done, {name} — I’m moving ahead with the {kind} action using the details already shared. I’ll prepare the first ready-to-review draft now."

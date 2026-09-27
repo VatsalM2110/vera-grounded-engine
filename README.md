@@ -1,4 +1,8 @@
-# Vera Grounded Message Engine
+# Vera Grounded AI Message Engine
+
+Vera uses Groq to generate natural messages grounded in the context supplied by the challenge. Set
+`GROQ_API_KEY` in the deployment environment to enable AI generation. If Groq is unavailable, the
+service automatically falls back to its deterministic templates so the API remains reliable.
 
 A deterministic, stateful submission for the magicpin Vera AI Challenge. It turns category, merchant, trigger, and optional customer context into a single grounded WhatsApp action—without an external LLM, latency, or fabricated facts.
 
@@ -26,4 +30,3 @@ Then run `python self_test.py`. For the official simulator, set its `BOT_URL` to
 The included `render.yaml` and `Procfile` support Render and other Procfile hosts. Set `TEAM_NAME`, `TEAM_MEMBER`, `CONTACT_EMAIL`, and `SUBMITTED_AT` in the host environment. For multi-instance production, point `VERA_DB_PATH` at persistent storage or keep one web instance during judging.
 
 Tradeoff: deterministic composition is less stylistically flexible than an LLM, but is fast, reproducible, auditable, and robust under fresh context injection.
-

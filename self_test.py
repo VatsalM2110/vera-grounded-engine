@@ -7,6 +7,7 @@ db.close()
 os.environ["VERA_DB_PATH"] = db.name
 
 from fastapi.testclient import TestClient
+import bot
 from bot import app
 
 client = TestClient(app)
@@ -36,5 +37,11 @@ assert auto["action"] == "wait"
 auto2 = client.post("/v1/reply", json={"conversation_id": action["conversation_id"], "merchant_id": "m1", "message": "Thank you for contacting us. We will get back to you.", "received_at": "2026-04-26T10:32:00Z", "turn_number": 3}).json()
 assert auto2["action"] == "end"
 assert client.get("/v1/healthz").json()["contexts_loaded"] == {"category": 1, "merchant": 1, "customer": 0, "trigger": 1}
-print("All Vera contract tests passed")
 
+# Verify the AI path independently without making a paid network call.
+original_groq = bot.groq_generate
+bot.groq_generate = lambda system, user, max_tokens=240: "AI-generated grounded draft for Dr. Meera. Shall I prepare it?"
+message, _, rationale = bot.compose(trigger, merchant, category, None)
+assert message.startswith("AI-generated") and rationale.startswith("Groq generated")
+bot.groq_generate = original_groq
+print("All Vera contract tests passed")
