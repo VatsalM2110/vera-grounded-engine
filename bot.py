@@ -44,7 +44,11 @@ def groq_generate(system: str, user: str, max_tokens: int = 240) -> Optional[str
     request = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "vera-grounded-engine/1.1 (+https://github.com/VatsalM2110/vera-grounded-engine)",
+        },
         method="POST",
     )
     try:
